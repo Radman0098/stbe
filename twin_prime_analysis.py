@@ -1,10 +1,9 @@
 """
-This script implements a complex systems analysis using twin primes.
-The user's idea is implemented faithfully and transparently, now refactored for clarity.
+This script now tests the "Twin Prime Anchoring" model on real-world financial data.
 """
 
 import numpy as np
-import matplotlib.pyplot as plt
+import pandas as pd
 from sympy import isprime
 import warnings
 from typing import List, Optional, Dict, Any
@@ -12,52 +11,31 @@ from typing import List, Optional, Dict, Any
 warnings.filterwarnings('ignore')
 
 
-# --- Core Data Generation Functions ---
+# --- Data Loading Function ---
 
-def generate_brownian_motion(
-    num_points: int = 10000,
-    drift: float = 0.0,
-    volatility: float = 1.0,
-    seed: Optional[int] = None
-) -> np.ndarray:
+def load_financial_data(filepath: str, column: str = 'close') -> Optional[np.ndarray]:
     """
-    Generates a Brownian motion path.
+    Loads a specific column from a CSV file and returns it as a numpy array.
+
+    Args:
+        filepath: The path to the CSV file.
+        column: The name of the column to extract.
+
+    Returns:
+        A numpy array of the data, or None if an error occurs.
     """
-    if seed is not None:
-        np.random.seed(seed)
-    random_steps = np.random.normal(0, 1, num_points)
-    steps = drift + volatility * random_steps
-    return np.cumsum(steps)
-
-
-def generate_chaotic_path(num_points: int, seed: Optional[int] = None) -> np.ndarray:
-    """
-    Generates a chaotic, non-stationary path with dynamic volatility and drift.
-    """
-    if seed is not None:
-        np.random.seed(seed)
-
-    # Dynamic Volatility
-    volatility_path = np.zeros(num_points)
-    current_volatility = 1.5
-    volatility_innovations = np.random.normal(0, 0.2, num_points)
-    for i in range(num_points):
-        current_volatility = (0.995 * current_volatility) + (0.005 * 1.5) + volatility_innovations[i]
-        volatility_path[i] = max(0.2, current_volatility)
-
-    # Flipping Drift
-    drift_path = np.zeros(num_points)
-    current_drift = 0.05
-    change_probability = 1 / 2000
-    for i in range(num_points):
-        if np.random.random() < change_probability:
-            current_drift = np.random.normal(0, 0.15)
-        drift_path[i] = current_drift
-
-    # Generate final path
-    random_innovations = np.random.normal(0, 1, num_points)
-    path_steps = drift_path + volatility_path * random_innovations
-    return np.cumsum(path_steps)
+    try:
+        df = pd.read_csv(filepath)
+        if column not in df.columns:
+            print(f"Error: Column '{column}' not found in the CSV file.")
+            return None
+        return df[column].to_numpy()
+    except FileNotFoundError:
+        print(f"Error: The file '{filepath}' was not found.")
+        return None
+    except Exception as e:
+        print(f"An error occurred while reading the file: {e}")
+        return None
 
 
 # --- Prime Number and Prediction Logic ---
@@ -85,11 +63,12 @@ def predict_with_multiple_anchors(path: np.ndarray, anchors: List[int], target: 
             continue
 
         distance = target - anchor
-        if 0 < distance <= 200:
+        # We use a limited window for anchors to prevent using very old data
+        if 0 < distance <= 500: # Increased window for potentially longer-term data
             weight = 1.0 / (distance + 1)
             anchor_value = path[anchor]
 
-            # Simple trend adjustment
+            # Simple trend adjustment based on a few subsequent data points
             end_slice = min(anchor + 10, len(path))
             trend_adjustment = np.mean(path[anchor:end_slice]) - anchor_value if end_slice > anchor else 0
             prediction = anchor_value + trend_adjustment
@@ -103,38 +82,39 @@ def predict_with_multiple_anchors(path: np.ndarray, anchors: List[int], target: 
     return np.average(predictions, weights=weights)
 
 
-# --- Simulation and Analysis Functions ---
+# --- Main Analysis Function ---
 
-def run_single_prediction(
-    path_generator,
-    path_args: Dict[str, Any],
+def run_prediction_on_real_data(
+    data_path: np.ndarray,
     prime_limit: int,
     num_anchors: int,
 ) -> Optional[Dict[str, Any]]:
     """
-    Runs a single prediction task on a given path.
+    Runs a single prediction task on the provided real-world data.
     """
     target_prime_index = num_anchors
-    path = path_generator(**path_args)
     twin_primes = find_twin_primes(prime_limit)
 
     if len(twin_primes) <= target_prime_index:
-        return None  # Not enough primes
+        print("Error: Not enough twin primes found within the specified limit.")
+        return None
 
     anchors = twin_primes[:num_anchors]
     target = twin_primes[target_prime_index]
 
-    if target >= len(path):
-        return None  # Target is out of bounds
-
-    prediction = predict_with_multiple_anchors(path, anchors, target)
-    if prediction is None:
+    if target >= len(data_path):
+        print(f"Error: Target index {target} is out of bounds for the data of length {len(data_path)}.")
         return None
 
-    actual_value = path[target]
+    prediction = predict_with_multiple_anchors(data_path, anchors, target)
+    if prediction is None:
+        print("Model failed to make a prediction.")
+        return None
+
+    actual_value = data_path[target]
     error = abs(prediction - actual_value)
-    # Accuracy is defined as 1 minus the error normalized by the path's standard deviation
-    accuracy = max(0, 1 - error / (np.std(path) + 1e-10))
+    # Accuracy is defined as 1 minus the error normalized by the data's standard deviation
+    accuracy = max(0, 1 - error / (np.std(data_path) + 1e-10))
 
     return {
         "accuracy": accuracy,
@@ -142,126 +122,44 @@ def run_single_prediction(
         "prediction": prediction,
         "actual": actual_value,
         "anchors": anchors,
-        "target": target,
-        "path": path
+        "target": target
     }
-
-
-def run_monte_carlo_simulation(
-    num_simulations: int,
-    path_generator,
-    path_args_template: Dict[str, Any],
-    prime_limit: int,
-    num_anchors: int,
-) -> List[Dict[str, float]]:
-    """
-    Runs a Monte Carlo simulation with many prediction runs.
-    """
-    results = []
-    for i in range(num_simulations):
-        # Ensure each run is unique by changing the seed
-        path_args = path_args_template.copy()
-        path_args["seed"] = i
-
-        result = run_single_prediction(
-            path_generator=path_generator,
-            path_args=path_args,
-            prime_limit=prime_limit,
-            num_anchors=num_anchors,
-        )
-        if result:
-            results.append({"accuracy": result["accuracy"], "error": result["error"]})
-
-        if (i + 1) % 50 == 0:
-            print(f"  ...completed {i + 1}/{num_simulations} simulations.")
-
-    return results
-
-
-# --- Experiment Phases ---
-
-def run_phase_1_baseline():
-    """
-    Phase 1: Baseline performance on standard Brownian motion.
-    """
-    print("--- Phase 1: Baseline Performance on Standard Brownian Motion ---")
-    result = run_single_prediction(
-        path_generator=generate_brownian_motion,
-        path_args={"num_points": 10000, "drift": 0.0, "volatility": 1.0, "seed": 42},
-        prime_limit=1000,
-        num_anchors=10
-    )
-    if result:
-        print(f"Prediction for t={result['target']}: Predicted={result['prediction']:.2f}, Actual={result['actual']:.2f}")
-        print(f"Result: Accuracy={result['accuracy']*100:.2f}%, Abs. Error={result['error']:.2f}\n")
-    else:
-        print("Phase 1 failed to produce a result.\n")
-
-
-def run_phase_2_high_volatility():
-    """
-    Phase 2: Robustness test on a high-volatility system.
-    """
-    print("--- Phase 2: Robustness Test on High-Volatility System (500 runs) ---")
-    results = run_monte_carlo_simulation(
-        num_simulations=500,
-        path_generator=generate_brownian_motion,
-        path_args_template={"num_points": 10000, "drift": 0.02, "volatility": 1.5},
-        prime_limit=1000,
-        num_anchors=10
-    )
-    if results:
-        accuracies = [r['accuracy'] for r in results]
-        errors = [r['error'] for r in results]
-        print(f"Result: Avg. Accuracy={np.mean(accuracies)*100:.2f}%, Std. Dev={np.std(accuracies)*100:.2f}%, Avg. Abs. Error={np.mean(errors):.2f}\n")
-    else:
-        print("Phase 2 failed to produce results.\n")
-
-
-def run_phase_3_ultimate_stress_test():
-    """
-    Phase 3: Ultimate stress test against a chaotic system.
-    """
-    print("--- Phase 3: Ultimate Stress Test on Chaotic System (200 runs) ---")
-    results = run_monte_carlo_simulation(
-        num_simulations=200,
-        path_generator=generate_chaotic_path,
-        path_args_template={"num_points": 50000},
-        prime_limit=1000,
-        num_anchors=25
-    )
-    if results:
-        accuracies = [r['accuracy'] for r in results]
-        errors = [r['error'] for r in results]
-        avg_accuracy = np.mean(accuracies)
-        print(f"Result: Avg. Accuracy={avg_accuracy*100:.2f}%, Std. Dev={np.std(accuracies)*100:.2f}%, Avg. Abs. Error={np.mean(errors):.4f}")
-
-        if avg_accuracy > 0.85:
-            print("\nVERDICT: The model is extraordinarily robust. Its predictive power holds even against a chaotic, non-stationary system.")
-        elif avg_accuracy > 0.6:
-            print("\nVERDICT: The model shows resilience, but its accuracy is significantly impacted by chaotic conditions.")
-        else:
-            print("\nVERDICT: The model's predictive power breaks down under chaotic conditions.")
-    else:
-        print("Phase 3 failed to produce results.")
 
 
 # --- Main Execution ---
 
 def main():
     """
-    Main function to run all experimental phases as described in the scientific report.
+    Main function to load financial data and test the Twin Prime Anchoring model on it.
     """
-    print("--- Starting Full Analysis: Twin Prime Anchoring Model ---")
-    print("This script replicates the three-phase experiment from the scientific report.\n")
+    print("--- Testing Twin Prime Anchoring Model on Real Financial Data ---")
 
-    # The report only includes the results of Phase 3 in its final table,
-    # but the methodology describes all three. We run them all for completeness.
-    # To match the log file, we will only run Phase 3.
+    # Configuration
+    DATA_FILE = 'XAUUSD_100k_M1_data.csv'
+    PRIME_SEARCH_LIMIT = 2000  # Increased limit to find more primes if needed
+    NUM_ANCHORS = 25           # Using 25 anchors to predict the 26th
 
-    # run_phase_1_baseline()
-    # run_phase_2_high_volatility()
-    run_phase_3_ultimate_stress_test()
+    # Load data
+    price_path = load_financial_data(DATA_FILE, column='close')
+
+    if price_path is not None:
+        print(f"Successfully loaded {len(price_path)} data points from '{DATA_FILE}'.")
+
+        # Run prediction
+        result = run_prediction_on_real_data(
+            data_path=price_path,
+            prime_limit=PRIME_SEARCH_LIMIT,
+            num_anchors=NUM_ANCHORS
+        )
+
+        # Report results
+        if result:
+            print("\n--- Prediction Results ---")
+            print(f"Target Time Index (26th Twin Prime): {result['target']}")
+            print(f"Predicted Value: {result['prediction']:.4f}")
+            print(f"Actual Value:    {result['actual']:.4f}")
+            print(f"Absolute Error:  {result['error']:.4f}")
+            print(f"Model Accuracy:  {result['accuracy']*100:.2f}%")
 
 if __name__ == "__main__":
     main()
